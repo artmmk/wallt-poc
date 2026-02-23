@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Wallt PoC - AR примерка картины</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main id="app">
+    <section class="panel" id="infoPanel">
+      <h1>Wallt PoC</h1>
+      <p>Наведите камеру на стену и нажмите «Войти в AR».</p>
+      <p>Тап по экрану фиксирует картину на найденной поверхности.</p>
+      <p class="small">Работает в браузерах с WebXR AR (обычно Chrome на Android).</p>
+      <div class="controls">
+        <label for="scaleRange">Размер картины: <span id="scaleValue">100%</span></label>
+        <input id="scaleRange" type="range" min="40" max="220" value="100" />
+      </div>
+      <button id="placeAgainBtn" type="button">Переместить заново</button>
+    </section>
+
+    <div id="overlay" class="overlay">
+      <p id="status">Инициализация AR...</p>
+    </div>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
