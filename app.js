@@ -18,12 +18,26 @@ let paintingRoot;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let placementLocked = false;
+let lastHitResult = null;
+let activeAnchor = null;
+let anchorRequestId = 0;
+let hasSmoothedReticlePose = false;
 
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 1452;
 const IMAGE_ASPECT = IMAGE_WIDTH / IMAGE_HEIGHT;
 const BASE_HEIGHT_METERS = 0.65;
 const MANUAL_PLACE_DISTANCE_METERS = 1.2;
+const RETICLE_SMOOTHING = 0.22;
+
+const tempMatrix = new THREE.Matrix4();
+const tempScale = new THREE.Vector3(1, 1, 1);
+const smoothedReticlePosition = new THREE.Vector3();
+const smoothedReticleQuaternion = new THREE.Quaternion();
+const rawReticlePosition = new THREE.Vector3();
+const rawReticleQuaternion = new THREE.Quaternion();
+const anchoredPosition = new THREE.Vector3();
+const anchoredQuaternion = new THREE.Quaternion();
 
 init();
 animate();
@@ -63,7 +77,7 @@ function init() {
 
       const button = ARButton.createButton(renderer, {
         requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay'],
+        optionalFeatures: ['dom-overlay', 'anchors'],
         domOverlay: { root: document.body }
       });
       button.style.zIndex = '6';
@@ -82,12 +96,18 @@ function init() {
 
   renderer.xr.addEventListener('sessionstart', () => {
     statusEl.textContent = 'Сканирую поверхности. Медленно ведите камерой по стене.';
+    clearActiveAnchor();
+    lastHitResult = null;
+    hasSmoothedReticlePose = false;
     placementLocked = false;
     paintingRoot.visible = false;
   });
 
   renderer.xr.addEventListener('sessionend', () => {
     statusEl.textContent = 'AR-сессия завершена. Можно запустить снова.';
+    clearActiveAnchor();
+    lastHitResult = null;
+    hasSmoothedReticlePose = false;
     hitTestSourceRequested = false;
     hitTestSource = null;
   });
@@ -106,6 +126,8 @@ function init() {
   });
 
   placeAgainBtn.addEventListener('click', () => {
+    clearActiveAnchor();
+    lastHitResult = null;
     placementLocked = false;
     paintingRoot.visible = false;
     statusEl.textContent = 'Наведите на стену и тапните для новой позиции.';
@@ -130,6 +152,7 @@ function placePaintingFromReticle() {
   paintingRoot.matrix.fromArray(reticle.matrix.elements);
   paintingRoot.matrix.decompose(paintingRoot.position, paintingRoot.quaternion, paintingRoot.scale);
   applyScaleFromUi();
+  tryCreateAnchorFromHitResult();
 }
 
 function placePaintingInFrontOfCamera() {
@@ -156,13 +179,44 @@ function placePaintingNow() {
   if (reticle.visible) {
     placePaintingFromReticle();
     placementLocked = true;
-    statusEl.textContent = 'Картина закреплена по поверхности. Изменяйте размер или нажмите «Переместить заново».';
+    statusEl.textContent = 'Картина закреплена. Выполняю стабилизацию положения.';
     return;
   }
 
   placePaintingInFrontOfCamera();
   placementLocked = true;
   statusEl.textContent = 'Поверхность не найдена. Картина поставлена перед камерой.';
+}
+
+function tryCreateAnchorFromHitResult() {
+  if (!lastHitResult || typeof lastHitResult.createAnchor !== 'function') {
+    statusEl.textContent = 'Картина закреплена без anchor. Возможна легкая дрожь.';
+    return;
+  }
+
+  const requestId = ++anchorRequestId;
+  lastHitResult.createAnchor().then((anchor) => {
+    if (requestId !== anchorRequestId || !anchor) {
+      if (anchor && typeof anchor.delete === 'function') {
+        anchor.delete();
+      }
+      return;
+    }
+
+    clearActiveAnchor();
+    activeAnchor = anchor;
+    statusEl.textContent = 'Картина закреплена по anchor. Стабильность улучшена.';
+  }).catch(() => {
+    statusEl.textContent = 'Anchor недоступен. Картина закреплена статически.';
+  });
+}
+
+function clearActiveAnchor() {
+  anchorRequestId += 1;
+  if (activeAnchor && typeof activeAnchor.delete === 'function') {
+    activeAnchor.delete();
+  }
+  activeAnchor = null;
 }
 
 function createPaintingMesh() {
@@ -246,16 +300,50 @@ function render(_, frame) {
       if (hitTestResults.length > 0) {
         const hit = hitTestResults[0];
         const pose = hit.getPose(referenceSpace);
+        lastHitResult = hit;
 
-        reticle.visible = true;
-        reticle.matrix.fromArray(pose.transform.matrix);
-        statusEl.textContent = 'Поверхность найдена. Тапните, чтобы разместить картину.';
+        if (pose) {
+          tempMatrix.fromArray(pose.transform.matrix);
+          tempMatrix.decompose(rawReticlePosition, rawReticleQuaternion, tempScale);
+
+          if (!hasSmoothedReticlePose) {
+            smoothedReticlePosition.copy(rawReticlePosition);
+            smoothedReticleQuaternion.copy(rawReticleQuaternion);
+            hasSmoothedReticlePose = true;
+          } else {
+            smoothedReticlePosition.lerp(rawReticlePosition, RETICLE_SMOOTHING);
+            smoothedReticleQuaternion.slerp(rawReticleQuaternion, RETICLE_SMOOTHING);
+          }
+
+          tempMatrix.compose(smoothedReticlePosition, smoothedReticleQuaternion, tempScale.set(1, 1, 1));
+          reticle.visible = true;
+          reticle.matrix.copy(tempMatrix);
+          statusEl.textContent = 'Поверхность найдена. Разместите картину.';
+        }
       } else {
         reticle.visible = false;
+        lastHitResult = null;
+        hasSmoothedReticlePose = false;
         statusEl.textContent = 'Ищу поверхность. Можно тапнуть, чтобы поставить картину перед камерой.';
       }
     } else if (placementLocked) {
       reticle.visible = false;
+      if (activeAnchor) {
+        const anchorPose = frame.getPose(activeAnchor.anchorSpace, referenceSpace);
+        if (anchorPose) {
+          const currentScale = Number(scaleRange.value) / 100;
+          tempMatrix.fromArray(anchorPose.transform.matrix);
+          tempMatrix.decompose(anchoredPosition, anchoredQuaternion, tempScale);
+          paintingRoot.matrix.compose(
+            anchoredPosition,
+            anchoredQuaternion,
+            tempScale.set(currentScale, currentScale, currentScale)
+          );
+          paintingRoot.position.copy(anchoredPosition);
+          paintingRoot.quaternion.copy(anchoredQuaternion);
+          paintingRoot.scale.set(currentScale, currentScale, currentScale);
+        }
+      }
     }
   }
 
