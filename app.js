@@ -19,6 +19,7 @@ const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 1452;
 const IMAGE_ASPECT = IMAGE_WIDTH / IMAGE_HEIGHT;
 const BASE_HEIGHT_METERS = 0.65;
+const MANUAL_PLACE_DISTANCE_METERS = 1.2;
 
 init();
 animate();
@@ -69,7 +70,7 @@ function init() {
       button.style.borderRadius = '12px';
       document.body.appendChild(button);
 
-      statusEl.textContent = 'Нажмите «Start AR», затем наведите на стену и тапните.';
+      statusEl.textContent = 'Нажмите «Start AR». Если поверхность не найдется, тап поставит картину перед камерой.';
     });
   } else {
     statusEl.textContent = 'WebXR API недоступен в этом браузере.';
@@ -88,17 +89,16 @@ function init() {
   });
 
   renderer.xr.addEventListener('select', () => {
-    if (!reticle.visible) {
+    if (reticle.visible) {
+      placePaintingFromReticle();
+      placementLocked = true;
+      statusEl.textContent = 'Картина закреплена по поверхности. Изменяйте размер или нажмите «Переместить заново».';
       return;
     }
 
-    paintingRoot.visible = true;
-    paintingRoot.matrix.fromArray(reticle.matrix.elements);
-    paintingRoot.matrix.decompose(paintingRoot.position, paintingRoot.quaternion, paintingRoot.scale);
-    applyScaleFromUi();
-
+    placePaintingInFrontOfCamera();
     placementLocked = true;
-    statusEl.textContent = 'Картина закреплена. Изменяйте размер или нажмите «Переместить заново».';
+    statusEl.textContent = 'Поверхность не найдена. Картина поставлена перед камерой.';
   });
 
   placeAgainBtn.addEventListener('click', () => {
@@ -112,6 +112,33 @@ function init() {
   });
 
   window.addEventListener('resize', onWindowResize);
+}
+
+function placePaintingFromReticle() {
+  paintingRoot.visible = true;
+  paintingRoot.matrix.fromArray(reticle.matrix.elements);
+  paintingRoot.matrix.decompose(paintingRoot.position, paintingRoot.quaternion, paintingRoot.scale);
+  applyScaleFromUi();
+}
+
+function placePaintingInFrontOfCamera() {
+  const cameraPosition = new THREE.Vector3();
+  const cameraQuaternion = new THREE.Quaternion();
+  const cameraForward = new THREE.Vector3();
+  const targetScale = Number(scaleRange.value) / 100;
+
+  camera.getWorldPosition(cameraPosition);
+  camera.getWorldQuaternion(cameraQuaternion);
+  camera.getWorldDirection(cameraForward);
+
+  const placementPosition = cameraPosition.add(cameraForward.multiplyScalar(MANUAL_PLACE_DISTANCE_METERS));
+  const placementScale = new THREE.Vector3(targetScale, targetScale, targetScale);
+
+  paintingRoot.visible = true;
+  paintingRoot.matrix.compose(placementPosition, cameraQuaternion, placementScale);
+  paintingRoot.position.copy(placementPosition);
+  paintingRoot.quaternion.copy(cameraQuaternion);
+  paintingRoot.scale.copy(placementScale);
 }
 
 function createPaintingMesh() {
@@ -201,7 +228,7 @@ function render(_, frame) {
         statusEl.textContent = 'Поверхность найдена. Тапните, чтобы разместить картину.';
       } else {
         reticle.visible = false;
-        statusEl.textContent = 'Ищу поверхность. Двигайте камерой по стене медленно.';
+        statusEl.textContent = 'Ищу поверхность. Можно тапнуть, чтобы поставить картину перед камерой.';
       }
     } else if (placementLocked) {
       reticle.visible = false;
