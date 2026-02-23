@@ -1,6 +1,6 @@
 :root {
   --bg: #0f1724;
-  --panel: rgba(12, 19, 31, 0.82);
+  --panel: rgba(12, 19, 31, 0.8);
   --line: rgba(255, 255, 255, 0.2);
   --text: #f4f7ff;
   --accent: #33d1a0;
@@ -28,57 +28,93 @@ body {
 
 .panel {
   position: absolute;
-  top: 16px;
-  left: 16px;
-  right: 16px;
-  max-width: 420px;
-  padding: 14px 14px 12px;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  max-width: 340px;
+  max-height: min(46vh, 340px);
+  overflow: auto;
+  padding: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   backdrop-filter: blur(8px);
   z-index: 5;
 }
 
+.panel.is-collapsed {
+  max-height: none;
+  overflow: hidden;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .panel h1 {
-  margin: 0 0 8px;
-  font-size: 1.25rem;
+  margin: 0;
+  font-size: 1rem;
+}
+
+#togglePanelBtn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+#panelBody {
+  margin-top: 8px;
 }
 
 .panel p {
   margin: 0 0 6px;
-  line-height: 1.35;
+  line-height: 1.25;
+  font-size: 0.9rem;
 }
 
 .panel .small {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   opacity: 0.9;
 }
 
 .controls {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .controls label {
   display: block;
-  margin-bottom: 8px;
-  font-size: 0.95rem;
+  margin-bottom: 6px;
+  font-size: 0.86rem;
 }
 
 .controls input[type="range"] {
   width: 100%;
 }
 
+#placeNowBtn,
 #placeAgainBtn {
   width: 100%;
-  margin-top: 12px;
+  margin-top: 8px;
   border: 0;
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 1rem;
-  background: linear-gradient(120deg, #2be2ac, var(--accent));
+  border-radius: 9px;
+  padding: 9px 10px;
+  font-size: 0.92rem;
   color: #03160f;
   font-weight: 600;
+}
+
+#placeNowBtn {
+  background: linear-gradient(120deg, #ffd56a, #ffb63a);
+}
+
+#placeAgainBtn {
+  background: linear-gradient(120deg, #2be2ac, var(--accent));
 }
 
 .overlay {
@@ -88,15 +124,15 @@ body {
   transform: translateX(-50%);
   z-index: 4;
   text-align: center;
-  padding: 10px 14px;
-  border-radius: 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
   background: rgba(0, 0, 0, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 #status {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.88rem;
 }
 
 canvas {

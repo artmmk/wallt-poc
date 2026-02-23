@@ -2,8 +2,12 @@ import * as THREE from 'https://unpkg.com/three@0.162.0/build/three.module.js';
 import { ARButton } from 'https://unpkg.com/three@0.162.0/examples/jsm/webxr/ARButton.js';
 
 const statusEl = document.getElementById('status');
+const infoPanel = document.getElementById('infoPanel');
+const panelBody = document.getElementById('panelBody');
+const togglePanelBtn = document.getElementById('togglePanelBtn');
 const scaleRange = document.getElementById('scaleRange');
 const scaleValue = document.getElementById('scaleValue');
+const placeNowBtn = document.getElementById('placeNowBtn');
 const placeAgainBtn = document.getElementById('placeAgainBtn');
 
 let camera;
@@ -89,22 +93,29 @@ function init() {
   });
 
   renderer.xr.addEventListener('select', () => {
-    if (reticle.visible) {
-      placePaintingFromReticle();
-      placementLocked = true;
-      statusEl.textContent = 'Картина закреплена по поверхности. Изменяйте размер или нажмите «Переместить заново».';
+    placePaintingNow();
+  });
+
+  placeNowBtn.addEventListener('click', () => {
+    const session = renderer.xr.getSession();
+    if (!session) {
+      statusEl.textContent = 'Сначала нажмите Start AR.';
       return;
     }
-
-    placePaintingInFrontOfCamera();
-    placementLocked = true;
-    statusEl.textContent = 'Поверхность не найдена. Картина поставлена перед камерой.';
+    placePaintingNow();
   });
 
   placeAgainBtn.addEventListener('click', () => {
     placementLocked = false;
     paintingRoot.visible = false;
     statusEl.textContent = 'Наведите на стену и тапните для новой позиции.';
+  });
+
+  togglePanelBtn.addEventListener('click', () => {
+    const collapsed = infoPanel.classList.toggle('is-collapsed');
+    panelBody.hidden = collapsed;
+    togglePanelBtn.textContent = collapsed ? 'Развернуть' : 'Свернуть';
+    togglePanelBtn.setAttribute('aria-expanded', String(!collapsed));
   });
 
   scaleRange.addEventListener('input', () => {
@@ -139,6 +150,19 @@ function placePaintingInFrontOfCamera() {
   paintingRoot.position.copy(placementPosition);
   paintingRoot.quaternion.copy(cameraQuaternion);
   paintingRoot.scale.copy(placementScale);
+}
+
+function placePaintingNow() {
+  if (reticle.visible) {
+    placePaintingFromReticle();
+    placementLocked = true;
+    statusEl.textContent = 'Картина закреплена по поверхности. Изменяйте размер или нажмите «Переместить заново».';
+    return;
+  }
+
+  placePaintingInFrontOfCamera();
+  placementLocked = true;
+  statusEl.textContent = 'Поверхность не найдена. Картина поставлена перед камерой.';
 }
 
 function createPaintingMesh() {
