@@ -1,7 +1,9 @@
 import * as THREE from 'https://unpkg.com/three@0.162.0/build/three.module.js';
 import { ARButton } from 'https://unpkg.com/three@0.162.0/examples/jsm/webxr/ARButton.js';
 
+const APP_VERSION = '0.3.0';
 const statusEl = document.getElementById('status');
+const appVersionEl = document.getElementById('appVersion');
 const infoPanel = document.getElementById('infoPanel');
 const panelBody = document.getElementById('panelBody');
 const togglePanelBtn = document.getElementById('togglePanelBtn');
@@ -22,6 +24,7 @@ let lastHitResult = null;
 let activeAnchor = null;
 let anchorRequestId = 0;
 let hasSmoothedReticlePose = false;
+let hasLockedPlacementPose = false;
 
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 1452;
@@ -29,6 +32,7 @@ const IMAGE_ASPECT = IMAGE_WIDTH / IMAGE_HEIGHT;
 const BASE_HEIGHT_METERS = 0.65;
 const MANUAL_PLACE_DISTANCE_METERS = 1.2;
 const RETICLE_SMOOTHING = 0.22;
+const ANCHOR_POSITION_SMOOTHING = 0.18;
 
 const tempMatrix = new THREE.Matrix4();
 const tempScale = new THREE.Vector3(1, 1, 1);
@@ -38,11 +42,15 @@ const rawReticlePosition = new THREE.Vector3();
 const rawReticleQuaternion = new THREE.Quaternion();
 const anchoredPosition = new THREE.Vector3();
 const anchoredQuaternion = new THREE.Quaternion();
+const lockedPlacementPosition = new THREE.Vector3();
+const lockedPlacementQuaternion = new THREE.Quaternion();
 
 init();
 animate();
 
 function init() {
+  appVersionEl.textContent = `v${APP_VERSION}`;
+
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
@@ -99,6 +107,7 @@ function init() {
     clearActiveAnchor();
     lastHitResult = null;
     hasSmoothedReticlePose = false;
+    hasLockedPlacementPose = false;
     placementLocked = false;
     paintingRoot.visible = false;
   });
@@ -108,6 +117,7 @@ function init() {
     clearActiveAnchor();
     lastHitResult = null;
     hasSmoothedReticlePose = false;
+    hasLockedPlacementPose = false;
     hitTestSourceRequested = false;
     hitTestSource = null;
   });
@@ -128,6 +138,7 @@ function init() {
   placeAgainBtn.addEventListener('click', () => {
     clearActiveAnchor();
     lastHitResult = null;
+    hasLockedPlacementPose = false;
     placementLocked = false;
     paintingRoot.visible = false;
     statusEl.textContent = 'Наведите на стену и тапните для новой позиции.';
@@ -151,6 +162,9 @@ function placePaintingFromReticle() {
   paintingRoot.visible = true;
   paintingRoot.matrix.fromArray(reticle.matrix.elements);
   paintingRoot.matrix.decompose(paintingRoot.position, paintingRoot.quaternion, paintingRoot.scale);
+  lockedPlacementPosition.copy(paintingRoot.position);
+  lockedPlacementQuaternion.copy(paintingRoot.quaternion);
+  hasLockedPlacementPose = true;
   applyScaleFromUi();
   tryCreateAnchorFromHitResult();
 }
@@ -173,6 +187,9 @@ function placePaintingInFrontOfCamera() {
   paintingRoot.position.copy(placementPosition);
   paintingRoot.quaternion.copy(cameraQuaternion);
   paintingRoot.scale.copy(placementScale);
+  lockedPlacementPosition.copy(placementPosition);
+  lockedPlacementQuaternion.copy(cameraQuaternion);
+  hasLockedPlacementPose = true;
 }
 
 function placePaintingNow() {
@@ -330,17 +347,18 @@ function render(_, frame) {
       reticle.visible = false;
       if (activeAnchor) {
         const anchorPose = frame.getPose(activeAnchor.anchorSpace, referenceSpace);
-        if (anchorPose) {
+        if (anchorPose && hasLockedPlacementPose) {
           const currentScale = Number(scaleRange.value) / 100;
           tempMatrix.fromArray(anchorPose.transform.matrix);
           tempMatrix.decompose(anchoredPosition, anchoredQuaternion, tempScale);
+          lockedPlacementPosition.lerp(anchoredPosition, ANCHOR_POSITION_SMOOTHING);
           paintingRoot.matrix.compose(
-            anchoredPosition,
-            anchoredQuaternion,
+            lockedPlacementPosition,
+            lockedPlacementQuaternion,
             tempScale.set(currentScale, currentScale, currentScale)
           );
-          paintingRoot.position.copy(anchoredPosition);
-          paintingRoot.quaternion.copy(anchoredQuaternion);
+          paintingRoot.position.copy(lockedPlacementPosition);
+          paintingRoot.quaternion.copy(lockedPlacementQuaternion);
           paintingRoot.scale.set(currentScale, currentScale, currentScale);
         }
       }
