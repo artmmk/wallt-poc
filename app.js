@@ -1,8 +1,11 @@
 import * as THREE from 'https://unpkg.com/three@0.162.0/build/three.module.js';
 import { ARButton } from 'https://unpkg.com/three@0.162.0/examples/jsm/webxr/ARButton.js';
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 const statusEl = document.getElementById('status');
+const diagSummaryEl = document.getElementById('diagSummary');
+const diagDetailsEl = document.getElementById('diagDetails');
+const toggleDiagBtn = document.getElementById('toggleDiagBtn');
 const appVersionEl = document.getElementById('appVersion');
 const infoPanel = document.getElementById('infoPanel');
 const panelBody = document.getElementById('panelBody');
@@ -16,6 +19,8 @@ let camera;
 let scene;
 let renderer;
 let reticle;
+let surfacePatch;
+let surfaceFrame;
 let paintingRoot;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
@@ -25,6 +30,15 @@ let activeAnchor = null;
 let anchorRequestId = 0;
 let hasSmoothedReticlePose = false;
 let hasLockedPlacementPose = false;
+let surfaceDetected = false;
+let placementMode = 'none';
+let frameCounter = 0;
+let hitFrameCounter = 0;
+let lastDiagUpdateAt = 0;
+let diagExpanded = false;
+let surfaceStability = 'unknown';
+let surfaceStabilityScore = 0;
+let hasPreviousRawPose = false;
 
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 1452;
@@ -33,6 +47,10 @@ const BASE_HEIGHT_METERS = 0.65;
 const MANUAL_PLACE_DISTANCE_METERS = 1.2;
 const RETICLE_SMOOTHING = 0.22;
 const ANCHOR_POSITION_SMOOTHING = 0.18;
+const SURFACE_PATCH_SIZE_METERS = 0.34;
+const DIAG_UPDATE_MS = 180;
+const STABILITY_POSITION_REF_METERS = 0.008;
+const STABILITY_ANGLE_REF_RAD = 0.09;
 
 const tempMatrix = new THREE.Matrix4();
 const tempScale = new THREE.Vector3(1, 1, 1);
@@ -40,10 +58,15 @@ const smoothedReticlePosition = new THREE.Vector3();
 const smoothedReticleQuaternion = new THREE.Quaternion();
 const rawReticlePosition = new THREE.Vector3();
 const rawReticleQuaternion = new THREE.Quaternion();
+const previousRawReticlePosition = new THREE.Vector3();
+const previousRawReticleQuaternion = new THREE.Quaternion();
 const anchoredPosition = new THREE.Vector3();
 const anchoredQuaternion = new THREE.Quaternion();
 const lockedPlacementPosition = new THREE.Vector3();
 const lockedPlacementQuaternion = new THREE.Quaternion();
+const colorRed = new THREE.Color(0xff5f57);
+const colorYellow = new THREE.Color(0xffc24d);
+const colorGreen = new THREE.Color(0x17e6a1);
 
 init();
 animate();
@@ -71,10 +94,15 @@ function init() {
   reticle.visible = false;
   scene.add(reticle);
 
+  ({ patch: surfacePatch, frame: surfaceFrame } = createSurfaceHighlight());
+  scene.add(surfacePatch);
+  scene.add(surfaceFrame);
+
   paintingRoot = createPaintingMesh();
   paintingRoot.visible = false;
   scene.add(paintingRoot);
   applyScaleFromUi();
+  updateDiagnostics();
 
   if ('xr' in navigator) {
     navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
@@ -108,8 +136,15 @@ function init() {
     lastHitResult = null;
     hasSmoothedReticlePose = false;
     hasLockedPlacementPose = false;
+    placementMode = 'none';
+    surfaceDetected = false;
+    surfaceStability = 'unknown';
+    surfaceStabilityScore = 0;
+    hasPreviousRawPose = false;
     placementLocked = false;
     paintingRoot.visible = false;
+    surfacePatch.visible = false;
+    surfaceFrame.visible = false;
   });
 
   renderer.xr.addEventListener('sessionend', () => {
@@ -118,8 +153,15 @@ function init() {
     lastHitResult = null;
     hasSmoothedReticlePose = false;
     hasLockedPlacementPose = false;
+    placementMode = 'none';
+    surfaceDetected = false;
+    surfaceStability = 'unknown';
+    surfaceStabilityScore = 0;
+    hasPreviousRawPose = false;
     hitTestSourceRequested = false;
     hitTestSource = null;
+    surfacePatch.visible = false;
+    surfaceFrame.visible = false;
   });
 
   renderer.xr.addEventListener('select', () => {
@@ -139,8 +181,15 @@ function init() {
     clearActiveAnchor();
     lastHitResult = null;
     hasLockedPlacementPose = false;
+    placementMode = 'none';
+    surfaceDetected = false;
+    surfaceStability = 'unknown';
+    surfaceStabilityScore = 0;
+    hasPreviousRawPose = false;
     placementLocked = false;
     paintingRoot.visible = false;
+    surfacePatch.visible = false;
+    surfaceFrame.visible = false;
     statusEl.textContent = 'Наведите на стену и тапните для новой позиции.';
   });
 
@@ -151,6 +200,12 @@ function init() {
     togglePanelBtn.setAttribute('aria-expanded', String(!collapsed));
   });
 
+  toggleDiagBtn.addEventListener('click', () => {
+    diagExpanded = !diagExpanded;
+    diagDetailsEl.hidden = !diagExpanded;
+    toggleDiagBtn.textContent = diagExpanded ? 'Скрыть diag' : 'Показать diag';
+  });
+
   scaleRange.addEventListener('input', () => {
     applyScaleFromUi();
   });
@@ -159,6 +214,7 @@ function init() {
 }
 
 function placePaintingFromReticle() {
+  placementMode = 'surface-hit';
   paintingRoot.visible = true;
   paintingRoot.matrix.fromArray(reticle.matrix.elements);
   paintingRoot.matrix.decompose(paintingRoot.position, paintingRoot.quaternion, paintingRoot.scale);
@@ -181,6 +237,7 @@ function placePaintingInFrontOfCamera() {
 
   const placementPosition = cameraPosition.add(cameraForward.multiplyScalar(MANUAL_PLACE_DISTANCE_METERS));
   const placementScale = new THREE.Vector3(targetScale, targetScale, targetScale);
+  placementMode = 'manual-fallback';
 
   paintingRoot.visible = true;
   paintingRoot.matrix.compose(placementPosition, cameraQuaternion, placementScale);
@@ -208,6 +265,7 @@ function placePaintingNow() {
 function tryCreateAnchorFromHitResult() {
   if (!lastHitResult || typeof lastHitResult.createAnchor !== 'function') {
     statusEl.textContent = 'Картина закреплена без anchor. Возможна легкая дрожь.';
+    placementMode = 'surface-no-anchor';
     return;
   }
 
@@ -222,8 +280,10 @@ function tryCreateAnchorFromHitResult() {
 
     clearActiveAnchor();
     activeAnchor = anchor;
+    placementMode = 'anchor';
     statusEl.textContent = 'Картина закреплена по anchor. Стабильность улучшена.';
   }).catch(() => {
+    placementMode = 'surface-no-anchor';
     statusEl.textContent = 'Anchor недоступен. Картина закреплена статически.';
   });
 }
@@ -260,6 +320,104 @@ function createPaintingMesh() {
   return group;
 }
 
+function createSurfaceHighlight() {
+  const patchGeometry = new THREE.PlaneGeometry(SURFACE_PATCH_SIZE_METERS, SURFACE_PATCH_SIZE_METERS);
+  const patchMaterial = new THREE.MeshBasicMaterial({
+    color: 0x17e6a1,
+    transparent: true,
+    opacity: 0.22,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const patch = new THREE.Mesh(patchGeometry, patchMaterial);
+  patch.matrixAutoUpdate = false;
+  patch.visible = false;
+
+  const edges = new THREE.EdgesGeometry(patchGeometry);
+  const frameMaterial = new THREE.LineBasicMaterial({
+    color: 0x90ffd8,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false
+  });
+  const frame = new THREE.LineSegments(edges, frameMaterial);
+  frame.matrixAutoUpdate = false;
+  frame.visible = false;
+
+  return { patch, frame };
+}
+
+function updateDiagnostics(now = performance.now()) {
+  if (!diagSummaryEl || !diagDetailsEl) {
+    return;
+  }
+
+  if (now - lastDiagUpdateAt < DIAG_UPDATE_MS) {
+    return;
+  }
+  lastDiagUpdateAt = now;
+
+  const sessionActive = Boolean(renderer?.xr?.getSession());
+  const hitSourceState = hitTestSource ? 'ready' : (hitTestSourceRequested ? 'requesting' : 'off');
+  const anchorState = activeAnchor ? 'active' : 'none';
+  const placementState = placementLocked ? 'locked' : 'free';
+  const surfaceState = surfaceDetected ? 'found' : 'none';
+  const stabilityState = surfaceStability;
+
+  diagSummaryEl.textContent = `diag: session=${sessionActive ? 'on' : 'off'} | surface=${surfaceState}(${stabilityState}) | anchor=${anchorState}`;
+  diagDetailsEl.textContent = [
+    `version: ${APP_VERSION}`,
+    `placement: ${placementState} (${placementMode})`,
+    `hit-source: ${hitSourceState}`,
+    `stability-score: ${surfaceStabilityScore.toFixed(2)}`,
+    `reticle: ${reticle?.visible ? 'visible' : 'hidden'}`,
+    `surface-patch: ${surfacePatch?.visible ? 'visible' : 'hidden'}`,
+    `frames: ${frameCounter}, hit-frames: ${hitFrameCounter}`
+  ].join('\n');
+}
+
+function updateSurfaceStability() {
+  if (!hasPreviousRawPose) {
+    previousRawReticlePosition.copy(rawReticlePosition);
+    previousRawReticleQuaternion.copy(rawReticleQuaternion);
+    hasPreviousRawPose = true;
+    surfaceStabilityScore = 1;
+    surfaceStability = 'good';
+    return;
+  }
+
+  const positionDelta = rawReticlePosition.distanceTo(previousRawReticlePosition);
+  const angleDelta = rawReticleQuaternion.angleTo(previousRawReticleQuaternion);
+  previousRawReticlePosition.copy(rawReticlePosition);
+  previousRawReticleQuaternion.copy(rawReticleQuaternion);
+
+  const normalizedPosition = Math.min(positionDelta / STABILITY_POSITION_REF_METERS, 1.8);
+  const normalizedAngle = Math.min(angleDelta / STABILITY_ANGLE_REF_RAD, 1.8);
+  const instantScore = Math.max(0, 1 - (0.62 * normalizedPosition + 0.38 * normalizedAngle));
+
+  surfaceStabilityScore = THREE.MathUtils.lerp(surfaceStabilityScore, instantScore, 0.22);
+
+  if (surfaceStabilityScore >= 0.68) {
+    surfaceStability = 'good';
+  } else if (surfaceStabilityScore >= 0.42) {
+    surfaceStability = 'medium';
+  } else {
+    surfaceStability = 'poor';
+  }
+}
+
+function applySurfaceDebugColor() {
+  let targetColor = colorYellow;
+  if (surfaceStability === 'good') {
+    targetColor = colorGreen;
+  } else if (surfaceStability === 'poor') {
+    targetColor = colorRed;
+  }
+
+  surfacePatch.material.color.copy(targetColor);
+  surfaceFrame.material.color.copy(targetColor);
+}
+
 function applyScaleFromUi() {
   const scale = Number(scaleRange.value) / 100;
   scaleValue.textContent = `${scaleRange.value}%`;
@@ -292,6 +450,7 @@ function animate() {
 }
 
 function render(_, frame) {
+  frameCounter += 1;
   const session = renderer.xr.getSession();
 
   if (frame && session) {
@@ -320,8 +479,11 @@ function render(_, frame) {
         lastHitResult = hit;
 
         if (pose) {
+          surfaceDetected = true;
+          hitFrameCounter += 1;
           tempMatrix.fromArray(pose.transform.matrix);
           tempMatrix.decompose(rawReticlePosition, rawReticleQuaternion, tempScale);
+          updateSurfaceStability();
 
           if (!hasSmoothedReticlePose) {
             smoothedReticlePosition.copy(rawReticlePosition);
@@ -335,16 +497,36 @@ function render(_, frame) {
           tempMatrix.compose(smoothedReticlePosition, smoothedReticleQuaternion, tempScale.set(1, 1, 1));
           reticle.visible = true;
           reticle.matrix.copy(tempMatrix);
-          statusEl.textContent = 'Поверхность найдена. Разместите картину.';
+          surfacePatch.visible = true;
+          applySurfaceDebugColor();
+          surfacePatch.matrix.copy(tempMatrix);
+          surfaceFrame.visible = true;
+          applySurfaceDebugColor();
+          surfaceFrame.matrix.copy(tempMatrix);
+          if (surfaceStability === 'good') {
+            statusEl.textContent = 'Поверхность стабильна (green). Можно размещать.';
+          } else if (surfaceStability === 'medium') {
+            statusEl.textContent = 'Поверхность средняя (yellow). Можно подождать лучшей стабилизации.';
+          } else {
+            statusEl.textContent = 'Поверхность шумная (red). Подвигайте камеру и улучшите свет.';
+          }
         }
       } else {
         reticle.visible = false;
+        surfacePatch.visible = false;
+        surfaceFrame.visible = false;
         lastHitResult = null;
+        surfaceDetected = false;
+        surfaceStability = 'unknown';
+        surfaceStabilityScore = 0;
+        hasPreviousRawPose = false;
         hasSmoothedReticlePose = false;
         statusEl.textContent = 'Ищу поверхность. Можно тапнуть, чтобы поставить картину перед камерой.';
       }
     } else if (placementLocked) {
       reticle.visible = false;
+      surfacePatch.visible = false;
+      surfaceFrame.visible = false;
       if (activeAnchor) {
         const anchorPose = frame.getPose(activeAnchor.anchorSpace, referenceSpace);
         if (anchorPose && hasLockedPlacementPose) {
@@ -365,5 +547,6 @@ function render(_, frame) {
     }
   }
 
+  updateDiagnostics();
   renderer.render(scene, camera);
 }

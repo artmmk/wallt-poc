@@ -134,16 +134,42 @@ body {
   bottom: max(24px, env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: 4;
-  text-align: center;
+  text-align: left;
   padding: 9px 12px;
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.18);
+  min-width: min(92vw, 360px);
 }
 
 #status {
   margin: 0;
   font-size: 0.88rem;
+}
+
+.diagSummary {
+  margin: 6px 0 0;
+  font-size: 0.76rem;
+  opacity: 0.95;
+}
+
+.diagDetails {
+  margin-top: 6px;
+  font-family: "Consolas", "Menlo", monospace;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  white-space: pre-line;
+  opacity: 0.92;
+}
+
+.diagToggleBtn {
+  margin-top: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 0.74rem;
 }
 
 canvas {
