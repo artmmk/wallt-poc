@@ -1,7 +1,7 @@
 import * as THREE from 'https://unpkg.com/three@0.162.0/build/three.module.js';
 import { ARButton } from 'https://unpkg.com/three@0.162.0/examples/jsm/webxr/ARButton.js';
 
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 const statusEl = document.getElementById('status');
 const diagSummaryEl = document.getElementById('diagSummary');
 const diagDetailsEl = document.getElementById('diagDetails');
@@ -39,6 +39,8 @@ let diagExpanded = false;
 let surfaceStability = 'unknown';
 let surfaceStabilityScore = 0;
 let hasPreviousRawPose = false;
+let surfaceOrientation = 'unknown';
+let hasVerticalTarget = false;
 
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 1452;
@@ -51,6 +53,8 @@ const SURFACE_PATCH_SIZE_METERS = 0.34;
 const DIAG_UPDATE_MS = 180;
 const STABILITY_POSITION_REF_METERS = 0.008;
 const STABILITY_ANGLE_REF_RAD = 0.09;
+const VERTICAL_SURFACE_DOT_MAX = 0.42;
+const HORIZONTAL_SURFACE_DOT_MIN = 0.82;
 
 const tempMatrix = new THREE.Matrix4();
 const tempScale = new THREE.Vector3(1, 1, 1);
@@ -60,6 +64,8 @@ const rawReticlePosition = new THREE.Vector3();
 const rawReticleQuaternion = new THREE.Quaternion();
 const previousRawReticlePosition = new THREE.Vector3();
 const previousRawReticleQuaternion = new THREE.Quaternion();
+const worldUp = new THREE.Vector3(0, 1, 0);
+const surfaceNormal = new THREE.Vector3();
 const anchoredPosition = new THREE.Vector3();
 const anchoredQuaternion = new THREE.Quaternion();
 const lockedPlacementPosition = new THREE.Vector3();
@@ -124,7 +130,7 @@ function init() {
       button.style.borderRadius = '12px';
       document.body.appendChild(button);
 
-      statusEl.textContent = 'Нажмите «Start AR». Если поверхность не найдется, тап поставит картину перед камерой.';
+      statusEl.textContent = 'Нажмите «Start AR». Ищу вертикальную стену; если не найдена, работает fallback.';
     });
   } else {
     statusEl.textContent = 'WebXR API недоступен в этом браузере.';
@@ -140,6 +146,8 @@ function init() {
     surfaceDetected = false;
     surfaceStability = 'unknown';
     surfaceStabilityScore = 0;
+    surfaceOrientation = 'unknown';
+    hasVerticalTarget = false;
     hasPreviousRawPose = false;
     placementLocked = false;
     paintingRoot.visible = false;
@@ -157,6 +165,8 @@ function init() {
     surfaceDetected = false;
     surfaceStability = 'unknown';
     surfaceStabilityScore = 0;
+    surfaceOrientation = 'unknown';
+    hasVerticalTarget = false;
     hasPreviousRawPose = false;
     hitTestSourceRequested = false;
     hitTestSource = null;
@@ -185,6 +195,8 @@ function init() {
     surfaceDetected = false;
     surfaceStability = 'unknown';
     surfaceStabilityScore = 0;
+    surfaceOrientation = 'unknown';
+    hasVerticalTarget = false;
     hasPreviousRawPose = false;
     placementLocked = false;
     paintingRoot.visible = false;
@@ -364,16 +376,31 @@ function updateDiagnostics(now = performance.now()) {
   const surfaceState = surfaceDetected ? 'found' : 'none';
   const stabilityState = surfaceStability;
 
-  diagSummaryEl.textContent = `diag: session=${sessionActive ? 'on' : 'off'} | surface=${surfaceState}(${stabilityState}) | anchor=${anchorState}`;
+  diagSummaryEl.textContent = `diag: session=${sessionActive ? 'on' : 'off'} | surface=${surfaceState}/${surfaceOrientation} | anchor=${anchorState}`;
   diagDetailsEl.textContent = [
     `version: ${APP_VERSION}`,
     `placement: ${placementState} (${placementMode})`,
     `hit-source: ${hitSourceState}`,
+    `vertical-target: ${hasVerticalTarget ? 'yes' : 'no'}`,
     `stability-score: ${surfaceStabilityScore.toFixed(2)}`,
+    `stability-level: ${stabilityState}`,
     `reticle: ${reticle?.visible ? 'visible' : 'hidden'}`,
     `surface-patch: ${surfacePatch?.visible ? 'visible' : 'hidden'}`,
     `frames: ${frameCounter}, hit-frames: ${hitFrameCounter}`
   ].join('\n');
+}
+
+function classifySurfaceOrientation() {
+  surfaceNormal.set(0, 1, 0).applyQuaternion(rawReticleQuaternion).normalize();
+  const upDot = Math.abs(surfaceNormal.dot(worldUp));
+
+  if (upDot <= VERTICAL_SURFACE_DOT_MAX) {
+    return { orientation: 'vertical', isVertical: true };
+  }
+  if (upDot >= HORIZONTAL_SURFACE_DOT_MIN) {
+    return { orientation: 'horizontal', isVertical: false };
+  }
+  return { orientation: 'angled', isVertical: false };
 }
 
 function updateSurfaceStability() {
@@ -408,7 +435,9 @@ function updateSurfaceStability() {
 
 function applySurfaceDebugColor() {
   let targetColor = colorYellow;
-  if (surfaceStability === 'good') {
+  if (!hasVerticalTarget) {
+    targetColor = colorRed;
+  } else if (surfaceStability === 'good') {
     targetColor = colorGreen;
   } else if (surfaceStability === 'poor') {
     targetColor = colorRed;
@@ -476,26 +505,40 @@ function render(_, frame) {
       if (hitTestResults.length > 0) {
         const hit = hitTestResults[0];
         const pose = hit.getPose(referenceSpace);
-        lastHitResult = hit;
 
         if (pose) {
           surfaceDetected = true;
           hitFrameCounter += 1;
           tempMatrix.fromArray(pose.transform.matrix);
           tempMatrix.decompose(rawReticlePosition, rawReticleQuaternion, tempScale);
-          updateSurfaceStability();
+          const classification = classifySurfaceOrientation();
+          surfaceOrientation = classification.orientation;
+          hasVerticalTarget = classification.isVertical;
 
-          if (!hasSmoothedReticlePose) {
-            smoothedReticlePosition.copy(rawReticlePosition);
-            smoothedReticleQuaternion.copy(rawReticleQuaternion);
-            hasSmoothedReticlePose = true;
+          if (hasVerticalTarget) {
+            lastHitResult = hit;
+            updateSurfaceStability();
+
+            if (!hasSmoothedReticlePose) {
+              smoothedReticlePosition.copy(rawReticlePosition);
+              smoothedReticleQuaternion.copy(rawReticleQuaternion);
+              hasSmoothedReticlePose = true;
+            } else {
+              smoothedReticlePosition.lerp(rawReticlePosition, RETICLE_SMOOTHING);
+              smoothedReticleQuaternion.slerp(rawReticleQuaternion, RETICLE_SMOOTHING);
+            }
+
+            tempMatrix.compose(smoothedReticlePosition, smoothedReticleQuaternion, tempScale.set(1, 1, 1));
+            reticle.visible = true;
           } else {
-            smoothedReticlePosition.lerp(rawReticlePosition, RETICLE_SMOOTHING);
-            smoothedReticleQuaternion.slerp(rawReticleQuaternion, RETICLE_SMOOTHING);
+            lastHitResult = null;
+            hasSmoothedReticlePose = false;
+            surfaceStability = 'unknown';
+            surfaceStabilityScore = 0;
+            hasPreviousRawPose = false;
+            reticle.visible = false;
           }
 
-          tempMatrix.compose(smoothedReticlePosition, smoothedReticleQuaternion, tempScale.set(1, 1, 1));
-          reticle.visible = true;
           reticle.matrix.copy(tempMatrix);
           surfacePatch.visible = true;
           applySurfaceDebugColor();
@@ -503,7 +546,13 @@ function render(_, frame) {
           surfaceFrame.visible = true;
           applySurfaceDebugColor();
           surfaceFrame.matrix.copy(tempMatrix);
-          if (surfaceStability === 'good') {
+          if (!hasVerticalTarget) {
+            if (surfaceOrientation === 'horizontal') {
+              statusEl.textContent = 'Найдена горизонтальная поверхность. Ищу именно стену.';
+            } else {
+              statusEl.textContent = 'Найдена наклонная поверхность. Ищу вертикальную стену.';
+            }
+          } else if (surfaceStability === 'good') {
             statusEl.textContent = 'Поверхность стабильна (green). Можно размещать.';
           } else if (surfaceStability === 'medium') {
             statusEl.textContent = 'Поверхность средняя (yellow). Можно подождать лучшей стабилизации.';
@@ -519,6 +568,8 @@ function render(_, frame) {
         surfaceDetected = false;
         surfaceStability = 'unknown';
         surfaceStabilityScore = 0;
+        surfaceOrientation = 'unknown';
+        hasVerticalTarget = false;
         hasPreviousRawPose = false;
         hasSmoothedReticlePose = false;
         statusEl.textContent = 'Ищу поверхность. Можно тапнуть, чтобы поставить картину перед камерой.';
